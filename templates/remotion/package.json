@@ -1,0 +1,22 @@
+{
+  "name": "agent-vision-recreation",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Recreation of a reference video's format with your own assets, driven by src/storyboard.json.",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts Main out/final.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p --audio-codec=aac --audio-bitrate=192k",
+    "still": "remotion still src/index.ts Main",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.530",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.530"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "typescript": "5.9.3"
+  }
+}

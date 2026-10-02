@@ -1,0 +1,18 @@
+{
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+  "duration": 3,
+  "shots": [
+    {
+      "id": "placeholder",
+      "start": 0,
+      "end": 3,
+      "background": "#111111",
+      "layers": [
+        { "type": "text", "text": "Replace src/storyboard.json", "box": { "x": 5, "y": 40, "w": 90, "h": 20 },
+          "style": { "sizePct": 5, "color": "#ffffff" }, "enter": { "type": "rise" } }
+      ]
+    }
+  ]
+}

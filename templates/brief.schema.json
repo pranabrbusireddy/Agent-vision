@@ -1,0 +1,528 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Vision production brief",
+  "description": "Every observation is an item with a confidence and, wherever possible, evidence (timestamps and/or frame files from analysis/). Evidence is optional here on purpose: validate_brief.py labels items without it 'unverified' instead of rejecting them.",
+  "type": "object",
+  "required": [
+    "reference",
+    "summary",
+    "pacing",
+    "structure",
+    "shots",
+    "text_styles",
+    "audio",
+    "unclear"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "description": "Where the claim was seen or heard. t = seconds into the reference; frames = paths relative to the run folder (analysis/frames/...).",
+      "properties": {
+        "t": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source": {
+          "type": "string",
+          "description": "analysis file the number came from, e.g. analysis/alignment.json"
+        }
+      },
+      "additionalProperties": false
+    },
+    "confidence": {
+      "enum": [
+        "high",
+        "medium",
+        "unverified"
+      ]
+    },
+    "hex": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$"
+    }
+  },
+  "properties": {
+    "reference": {
+      "type": "object",
+      "required": [
+        "source",
+        "duration",
+        "fps",
+        "size"
+      ],
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "number"
+        },
+        "fps": {
+          "type": "number"
+        },
+        "size": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "quality_notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "Two or three sentences on the format: what makes this edit work."
+    },
+    "pacing": {
+      "type": "object",
+      "required": [
+        "shots",
+        "avg_shot_s",
+        "fastest_shot_s",
+        "slowest_shot_s",
+        "confidence"
+      ],
+      "properties": {
+        "shots": {
+          "type": "integer"
+        },
+        "avg_shot_s": {
+          "type": "number"
+        },
+        "fastest_shot_s": {
+          "type": "number"
+        },
+        "slowest_shot_s": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        }
+      }
+    },
+    "structure": {
+      "type": "array",
+      "description": "The arc: hook, reveal, feature beats, CTA (or whatever the reference actually does).",
+      "items": {
+        "type": "object",
+        "required": [
+          "section",
+          "start",
+          "end",
+          "shots",
+          "purpose",
+          "confidence"
+        ],
+        "properties": {
+          "section": {
+            "enum": [
+              "hook",
+              "problem",
+              "reveal",
+              "feature",
+              "proof",
+              "cta",
+              "outro",
+              "other"
+            ]
+          },
+          "start": {
+            "type": "number"
+          },
+          "end": {
+            "type": "number"
+          },
+          "shots": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/$defs/evidence"
+          },
+          "confidence": {
+            "$ref": "#/$defs/confidence"
+          }
+        }
+      }
+    },
+    "shots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "shot",
+          "start",
+          "end",
+          "framing",
+          "content_type",
+          "motion",
+          "transition_in",
+          "confidence"
+        ],
+        "properties": {
+          "shot": {
+            "type": "integer"
+          },
+          "start": {
+            "type": "number"
+          },
+          "end": {
+            "type": "number"
+          },
+          "framing": {
+            "type": "string",
+            "description": "e.g. full-bleed UI, device mockup centred, close crop on a button"
+          },
+          "content_type": {
+            "enum": [
+              "ui",
+              "device",
+              "typography",
+              "logo",
+              "product",
+              "person",
+              "abstract",
+              "mixed"
+            ],
+            "description": "WHAT kind of thing is shown \u2014 never copy the thing itself"
+          },
+          "on_screen_text": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "text",
+                "style",
+                "confidence"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "style": {
+                  "type": "string",
+                  "description": "name of an entry in text_styles"
+                },
+                "position": {
+                  "type": "string"
+                },
+                "evidence": {
+                  "$ref": "#/$defs/evidence"
+                },
+                "confidence": {
+                  "$ref": "#/$defs/confidence"
+                }
+              }
+            }
+          },
+          "motion": {
+            "type": "object",
+            "required": [
+              "type",
+              "confidence"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "static, push-in, pan, scale-up, parallax, scroll, cursor demo\u2026"
+              },
+              "speed": {
+                "enum": [
+                  "still",
+                  "slow",
+                  "medium",
+                  "fast",
+                  "whip"
+                ]
+              },
+              "easing": {
+                "type": "string",
+                "description": "feel only (e.g. snappy ease-out, linear, overshoot) \u2014 inferred from stills, so rarely above medium confidence"
+              },
+              "evidence": {
+                "$ref": "#/$defs/evidence"
+              },
+              "confidence": {
+                "$ref": "#/$defs/confidence"
+              }
+            }
+          },
+          "transition_in": {
+            "type": "object",
+            "required": [
+              "type",
+              "confidence"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "hard cut, crossfade, whip, zoom-through, mask wipe, match cut\u2026"
+              },
+              "duration_s": {
+                "type": "number"
+              },
+              "on_audio": {
+                "type": "string",
+                "description": "e.g. 'on onset at 3.20 s (alignment.json cut 4)'"
+              },
+              "evidence": {
+                "$ref": "#/$defs/evidence"
+              },
+              "confidence": {
+                "$ref": "#/$defs/confidence"
+              }
+            }
+          },
+          "colour": {
+            "type": "object",
+            "properties": {
+              "background": {
+                "$ref": "#/$defs/hex"
+              },
+              "accent": {
+                "$ref": "#/$defs/hex"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          },
+          "notes": {
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/$defs/evidence"
+          },
+          "confidence": {
+            "$ref": "#/$defs/confidence"
+          }
+        }
+      }
+    },
+    "text_styles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "font_feel",
+          "weight",
+          "case",
+          "size_pct_of_height",
+          "colour",
+          "animation",
+          "confidence"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "font_feel": {
+            "type": "string",
+            "description": "e.g. condensed grotesk, geometric sans, mono \u2014 a category, not a guess at the exact font"
+          },
+          "weight": {
+            "type": "string"
+          },
+          "case": {
+            "enum": [
+              "upper",
+              "title",
+              "sentence",
+              "lower",
+              "mixed"
+            ]
+          },
+          "size_pct_of_height": {
+            "type": "number",
+            "description": "cap height as % of frame height, measured on a frame"
+          },
+          "colour": {
+            "$ref": "#/$defs/hex"
+          },
+          "animation": {
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/$defs/evidence"
+          },
+          "confidence": {
+            "$ref": "#/$defs/confidence"
+          }
+        }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "required": [
+        "available"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "tempo_bpm": {
+          "type": "number"
+        },
+        "cuts_follow_bpm": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "character": {
+          "type": "string",
+          "description": "the feel of the bed (e.g. sparse electronic, rising synth) \u2014 describe, never name or copy the track"
+        },
+        "cues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "t",
+              "kind",
+              "description",
+              "confidence"
+            ],
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "kind": {
+                "enum": [
+                  "beat",
+                  "hit",
+                  "drop",
+                  "riser",
+                  "whoosh",
+                  "click",
+                  "voice",
+                  "silence",
+                  "music_start",
+                  "music_end",
+                  "other"
+                ]
+              },
+              "description": {
+                "type": "string"
+              },
+              "on_cut": {
+                "type": "integer"
+              },
+              "evidence": {
+                "$ref": "#/$defs/evidence"
+              },
+              "confidence": {
+                "$ref": "#/$defs/confidence"
+              }
+            }
+          }
+        },
+        "speech": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "start",
+              "end",
+              "text",
+              "confidence"
+            ],
+            "properties": {
+              "start": {
+                "type": "number"
+              },
+              "end": {
+                "type": "number"
+              },
+              "text": {
+                "type": "string"
+              },
+              "evidence": {
+                "$ref": "#/$defs/evidence"
+              },
+              "confidence": {
+                "$ref": "#/$defs/confidence"
+              }
+            }
+          }
+        }
+      }
+    },
+    "unclear": {
+      "type": "array",
+      "description": "Everything too fast, small, blurred or ambiguous to analyse. Required \u2014 an empty list is a claim too.",
+      "items": {
+        "type": "object",
+        "required": [
+          "what",
+          "why"
+        ],
+        "properties": {
+          "what": {
+            "type": "string"
+          },
+          "t": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "why": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "too_close_to_reference": {
+      "type": "array",
+      "description": "Risk #6: distinctive compositions that must NOT be copied in the recreation.",
+      "items": {
+        "type": "object",
+        "required": [
+          "shot",
+          "what"
+        ],
+        "properties": {
+          "shot": {
+            "type": "integer"
+          },
+          "what": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
