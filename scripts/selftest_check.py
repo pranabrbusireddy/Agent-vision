@@ -119,6 +119,52 @@ elif mode == "brief":
     code, out = run_validator(silent, b)
     check(code == 1 and "describes sound" in out, "describing sound on an audio-less reference is rejected")
 
+    # ---- speech gate (F1/F2): quotes only from a transcript, never when speech was skipped
+    sp_path = run / "analysis" / "speech.json"
+    original = sp_path.read_text()
+    p = subprocess.run([PY, str(HERE / "transcribe.py"), str(run), "--skip", "declined by user"], capture_output=True, text=True)
+    check(p.returncode == 0 and json.loads(sp_path.read_text()) == {"available": False, "reason": "speech not analysed: declined by user"},
+          "transcribe.py --skip writes {available: false, reason}")
+    p = subprocess.run([PY, str(HERE / "align.py"), str(run)], capture_output=True, text=True)
+    check(p.returncode == 0 and "speech" not in json.loads((run / "analysis" / "alignment.json").read_text()),
+          "align.py accepts the --skip output (no speech section)")
+
+    b = copy.deepcopy(good)
+    b["audio"]["speech"] = [{"start": 0.5, "end": 2.0, "text": "Ship faster with Acme", "confidence": "medium"}]
+    code, out = run_validator(run, b)
+    check(code == 1 and "speech wasn't analysed" in out and "declined by user" in out, "speech skipped + invented quote is rejected, reason cited")
+
+    b = copy.deepcopy(good)
+    b["summary"] = "Bold captions: \u201cSHIP IT\u201d on shot 3, then \"NOW\" on the CTA."
+    code, out = run_validator(run, b)
+    check(code == 0 and "may describe speech" not in out, "speech skipped + quoted on-screen text: passes, no speech warning")
+
+    b = copy.deepcopy(good)
+    b["summary"] = "A voiceover says the product is fast."
+    code, out = run_validator(run, b)
+    check(code == 0 and "may describe speech" in out, "speech skipped + 'voiceover says' in summary: warned")
+
+    sp_path.write_text(json.dumps({"available": True, "engine": "test", "language": "en", "segments": [
+        {"start": 1.0, "end": 2.5, "text": "Ship it today.", "confidence": "medium"}]}))
+    # Cites evidence, so the auto-label doesn't downgrade it before the confidence check.
+    quote = {"start": 1.2, "end": 2.0, "text": "ship it TODAY", "confidence": "medium",
+             "evidence": {"t": [1.2], "source": "analysis/speech.json"}}
+    for label, change, want in [
+        ("exact quote (case/punctuation-insensitive) passes", {}, 0),
+        ("altered quote is rejected", {"text": "ship it tomorrow"}, 1),
+        ("time-shifted quote is rejected", {"start": 8.0, "end": 9.0}, 1),
+        ("quote more confident than its transcript segment is rejected", {"confidence": "high"}, 1),
+        ("word fragment 'hip' (from 'ship') is rejected", {"text": "hip"}, 1),
+        ("cross-word fragment 'p it to' is rejected", {"text": "p it to"}, 1),
+        ("whole-word sub-quote 'it today' passes", {"text": "it today"}, 0),
+        ("quote claiming 0–14 s for 1.0–2.5 s of speech is rejected", {"text": "today", "start": 0.0, "end": 14.0}, 1),
+    ]:
+        b = copy.deepcopy(good)
+        b["audio"]["speech"] = [{**quote, **change}]
+        code, out = run_validator(run, b)
+        check(code == want, f"speech analysed: {label}")
+    sp_path.write_text(original)
+
     run_validator(run, good, write=True)  # leave a clean brief behind for the build step
 
 elif mode == "storyboard":

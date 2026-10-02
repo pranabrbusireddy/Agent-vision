@@ -1,6 +1,10 @@
 """Phase 3: speech, if any.
 
     .venv/bin/python scripts/transcribe.py <run-dir> [--model NAME]
+    .venv/bin/python scripts/transcribe.py <run-dir> --skip "<reason>"
+
+--skip records that speech was deliberately not analysed (e.g. the user declined
+the model download). validate_brief.py then rejects any speech quote in the brief.
 
 Reads analysis/audio.wav (from audio.py), writes analysis/speech.json.
 Engine: mlx-whisper on Apple Silicon, else faster-whisper (both open source).
@@ -14,10 +18,18 @@ from pathlib import Path
 ap = argparse.ArgumentParser()
 ap.add_argument("run")
 ap.add_argument("--model", help="override the model (mlx repo id or faster-whisper size)")
+ap.add_argument("--skip", metavar="REASON", help="don't transcribe; record why")
 args = ap.parse_args()
 RUN = Path(args.run).resolve()
 AN = RUN / "analysis"
 OUT = AN / "speech.json"
+
+if args.skip is not None:
+    reason = args.skip.strip() or "skipped"
+    AN.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps({"available": False, "reason": f"speech not analysed: {reason}"}, indent=2))
+    print(f"speech: not analysed ({reason})")
+    raise SystemExit(0)
 wav = AN / "audio.wav"
 
 audio = json.loads((AN / "audio.json").read_text()) if (AN / "audio.json").exists() else {}

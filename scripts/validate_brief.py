@@ -7,9 +7,14 @@ Rejects (exit 1):
   - a cited frame that doesn't exist, or a cited time outside the reference
   - brief shots that don't match the measured shots in analysis/shots.json
   - any claim about sound when analysis/audio.json says audio wasn't available
+  - any speech quote when analysis/speech.json says speech wasn't analysed
+  - a speech quote that isn't in the transcript at overlapping times, or that
+    claims more confidence than the transcript segment it came from
 Auto-labels (risk #1):
   - any item with no timestamp and no frame → confidence "unverified", auto_unverified: true
 Warns:
+  - with speech not analysed: voice cues, and summary/structure text that seems
+    to quote speech (heuristic, so a warning)
   - easing marked "high" (easing is inferred from stills)
   - pacing numbers that disagree with the measured shots
 
@@ -18,6 +23,7 @@ check is dry-run (exit code still reports pass/fail).
 """
 import argparse
 import json
+import re
 from pathlib import Path
 
 import jsonschema
@@ -35,6 +41,7 @@ schema = json.loads((SKILL / "templates" / "brief.schema.json").read_text())
 media = json.loads((AN / "media.json").read_text())
 shots_doc = json.loads((AN / "shots.json").read_text())
 audio = json.loads((AN / "audio.json").read_text()) if (AN / "audio.json").exists() else {"available": False, "reason": "audio.py not run"}
+speech = json.loads((AN / "speech.json").read_text()) if (AN / "speech.json").exists() else {"available": False, "reason": "transcribe.py not run"}
 
 errors, warnings, auto = [], [], []
 
@@ -93,6 +100,42 @@ if not audio.get("available"):
     sound = [c for c in a.get("cues", []) if c["kind"] != "silence"] + a.get("speech", [])
     if a.get("available") or sound or a.get("tempo_bpm") or a.get("character"):
         errors.append(f"brief describes sound, but analysis/audio.json says audio wasn't available ({audio.get('reason')})")
+
+# Never quote speech that wasn't transcribed, and never more firmly than the transcript.
+RANK = {"unverified": 0, "medium": 1, "high": 2}
+
+
+def norm(text):
+    return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in text).split())
+
+
+quotes = brief["audio"].get("speech", [])
+if not speech.get("available"):
+    if quotes:
+        errors.append(f"brief quotes {len(quotes)} speech segment(s), but speech wasn't analysed ({speech.get('reason')})")
+    voice = [c for c in brief["audio"].get("cues", []) if c["kind"] == "voice"]
+    if voice:
+        warnings.append(f"{len(voice)} voice cue(s) while speech wasn't analysed — keep them to 'a voice is present', never what it says")
+    # Speech words only: quotation marks alone are normal (on-screen text is quoted all the time).
+    said = re.compile(r"\b(says|said|saying|voice-?over|vo|narrator|narrates|narration|spoken|speaks|speaking)\b", re.I)
+    for where, text in [("summary", brief["summary"])] + [(f"structure[{i}].purpose", s["purpose"]) for i, s in enumerate(brief["structure"])]:
+        if said.search(text):
+            warnings.append(f"{where} may describe speech content, which wasn't analysed: {text[:80]!r}")
+else:
+    segs = speech.get("segments", [])
+    for i, q in enumerate(quotes):
+        near = [g for g in segs if g["start"] <= q["end"] + 0.5 and g["end"] >= q["start"] - 0.5]
+        heard = norm(" ".join(g["text"] for g in near))
+        # Whole words only: "hip" must not match "ship".
+        if not norm(q["text"]) or f" {norm(q['text'])} " not in f" {heard} ":
+            errors.append(f"audio/speech[{i}]: {q['text'][:60]!r} at {q['start']}–{q['end']} s is not in the transcript at those times")
+        # The quote may not claim more time than the speech it comes from (M2 times text to it).
+        elif q["start"] < min(g["start"] for g in near) - 0.5 or q["end"] > max(g["end"] for g in near) + 0.5:
+            errors.append(f"audio/speech[{i}]: claims {q['start']}–{q['end']} s, but that speech spans "
+                          f"{min(g['start'] for g in near)}–{max(g['end'] for g in near)} s (±0.5)")
+        elif RANK[q["confidence"]] > max((RANK.get(g["confidence"], 0) for g in near), default=0):
+            errors.append(f"audio/speech[{i}]: marked {q['confidence']}, but the transcript segment is only "
+                          f"{max(near, key=lambda g: RANK.get(g['confidence'], 0))['confidence']}")
 
 for path, item in items:
     if path.endswith("/motion") and item.get("easing") and item["confidence"] == "high":
@@ -163,8 +206,13 @@ def md():
         out += ["", "| Time | Kind | Cue | On cut | Conf. | Evidence |", "|---|---|---|---|---|---|"]
         for c in a.get("cues", []):
             out.append(f"| {c['t']:.2f} s | {c['kind']} | {c['description']} | {c.get('on_cut', '—')} | {CONF[c['confidence']]} | {cite(c['evidence'])} |")
-        if a.get("speech"):
+        if not speech.get("available"):
+            why = str(speech.get("reason", "")).removeprefix("speech not analysed: ")
+            out += ["", f"Speech: **not analysed** ({why}). Nothing in this brief describes what is said."]
+        elif a.get("speech"):
             out += ["", "Speech:", ""] + [f"- {s['start']:.2f}–{s['end']:.2f} s: “{s['text']}” ({CONF[s['confidence']]})" for s in a["speech"]]
+        else:
+            out += ["", "Speech: transcribed, none quoted in this brief (see analysis/speech.json)."]
     out += ["", "## Too fast or unclear to analyse", ""]
     out += [f"- {u['what']}{' at ' + ', '.join(f'{t:.2f} s' for t in u['t']) if u.get('t') else ''}: {u['why']}" for u in b["unclear"]] or ["- Nothing flagged."]
     if b.get("too_close_to_reference"):

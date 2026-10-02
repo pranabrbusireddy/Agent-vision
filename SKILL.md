@@ -46,7 +46,7 @@ All commands run from the user's project folder (where `./assets` lives); runs g
 
 ### Phase 3 — Audio analysis (local, first-class)
 1. `$PY $AV/scripts/audio.py <run>` → tempo (plus half/double candidates), beats, onsets, loudness peaks, silences. No audio or silent audio is reported as unavailable.
-2. `$PY $AV/scripts/transcribe.py <run>` → speech (mlx-whisper on Apple Silicon, else faster-whisper). Segments over music are marked unverified.
+2. `$PY $AV/scripts/transcribe.py <run>` → speech (mlx-whisper on Apple Silicon, else faster-whisper). Segments over music are marked unverified. The first run downloads the model (about 1.6 GB, once); ask the user first. If they decline, run `transcribe.py <run> --skip "<their reason>"`. The brief then can't quote speech at all, and brief.md says speech wasn't analysed.
 3. `$PY $AV/scripts/align.py <run>` → every event tagged with its shot, `cut_hits` ("hit lands on cut 4 at 3.20 s", or explicitly not on a hit), and which tempo candidate the cuts actually follow.
 4. Optional cross-check: only if the user has configured a video-capable model API key. Read that provider's docs for the current model name at runtime. Where it disagrees with the local timings, the local measurement wins and the item becomes unverified. Never required.
 
