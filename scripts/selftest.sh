@@ -13,6 +13,15 @@ S="$SKILL/scripts"
 PY="$SKILL/.venv/bin/python"
 OUT="$SKILL/selftest-runs"
 PORT=8766
+# One run at a time: runs share selftest-runs/ and the port, so a second run
+# would wipe the first's files mid-flight. mkdir is atomic, so it works as a lock.
+LOCK="$SKILL/.selftest.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "another selftest is running (lock: $LOCK, pid $(cat "$LOCK/pid" 2>/dev/null || echo ?)); if it isn't, remove the lock dir" >&2
+  exit 3
+fi
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
 rm -rf "$OUT" && mkdir -p "$OUT/www" "$OUT/assets"
 cd "$OUT"
 status=0
@@ -45,7 +54,7 @@ ffmpeg -hide_banner -loglevel error -y -f lavfi -i "color=c=0xf97316:s=400x400,f
 
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory www >/dev/null 2>&1 &
 SERVER=$!
-trap 'kill $SERVER 2>/dev/null || true' EXIT
+trap 'kill $SERVER 2>/dev/null || true; rm -rf "$LOCK"' EXIT
 sleep 1
 URL="http://127.0.0.1:$PORT"
 
@@ -121,6 +130,44 @@ else
   fail "VFR .mp4 not detected as variable: $(cat phone-mp4.log)"
 fi
 
+# ------------------------------------------------------------------ near-hit + decoy-kick fixture (#107, #108)
+echo "== near hits and attack-snapped beats"
+"$PY" - "$OUT" <<'PYEOF'
+import subprocess, sys, wave
+import numpy as np
+out = sys.argv[1]; SR = 48000; DUR = 8.0
+y = np.zeros(int(DUR * SR))
+t = lambda sec: np.arange(int(sec * SR)) / SR
+def add(at, x):
+    i = int(round(at * SR)); y[i:i + len(x)] += x[: len(y) - i]
+# Kicks on the 0.5 s grid: sharp attack to 30 %, then a ~70 ms rise to the peak (beat trackers mark the peak).
+k = t(0.25); env = np.where(k < 0.001, k / 0.001 * 0.3, np.where(k < 0.07, 0.3 + 0.7 * (k - 0.001) / 0.069, np.exp(-(k - 0.07) / 0.06)))
+kick = 0.9 * np.sin(2 * np.pi * 60 * k) * env
+c = t(0.005); click = 0.12 * np.sin(2 * np.pi * 2000 * c)          # decoy: weak click 100 ms before each kick
+for i in range(1, 16):
+    add(i * 0.5, kick); add(i * 0.5 - 0.1, click)
+b = t(0.04); beep = 0.8 * np.sin(2 * np.pi * 880 * b) * np.exp(-b / 0.02)
+add(4.30 + 0.040, beep)                                              # near: 40 ms after the 4.30 s cut (off the 120 and 240 bpm grids) (hit tol 25 ms, near 50 ms at 60 fps)
+pcm = (np.clip(y / np.abs(y).max() * 0.9, -1, 1) * 32767).astype(np.int16)
+with wave.open(f"{out}/fx2.wav", "wb") as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR); w.writeframes(pcm.tobytes())
+cuts = [0, 1.0, 2.0, 3.5, 4.30, 5.0, 6.5, DUR]
+args, filt, lab = [], "", ""
+for i in range(len(cuts) - 1):
+    args += ["-f", "lavfi", "-i", f"testsrc2=s=360x640:r=60:d={cuts[i+1]-cuts[i]:.3f}"]
+    filt += f"[{i}:v]hue=h={i*75}:s=1.6{',negate' if i % 2 else ''},setsar=1[v{i}];"; lab += f"[v{i}]"
+n = len(cuts) - 1
+subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args, "-i", f"{out}/fx2.wav",
+                "-filter_complex", f"{filt}{lab}concat=n={n}:v=1:a=0[v]", "-map", "[v]", "-map", f"{n}:a",
+                "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", f"{out}/fx2.mp4"], check=True)
+PYEOF
+if bash "$S/download.sh" "$OUT/fx2.mp4" fx2 > fx2.log 2>&1; then
+  "$PY" "$S/probe.py" agent-vision-runs/fx2 >/dev/null && "$PY" "$S/audio.py" agent-vision-runs/fx2 >/dev/null && "$PY" "$S/align.py" agent-vision-runs/fx2 >/dev/null
+  "$PY" "$S/selftest_check.py" near agent-vision-runs/fx2 || status=1
+else
+  fail "fx2 fixture: $(cat fx2.log)"
+fi
+
 # ------------------------------------------------------------------ brief gate
 echo "== brief validation"
 "$PY" "$S/selftest_check.py" brief "$RUN" "$OUT/agent-vision-runs/silent" || status=1
@@ -132,7 +179,11 @@ if [ "${1:-}" = "--render" ]; then
   "$PY" "$S/sfx.py" "$RUN/remotion/public/audio" --bpm 120 --duration "$DUR"
   "$PY" "$S/selftest_check.py" storyboard "$RUN"
   (cd "$RUN/remotion" && npx tsc --noEmit && npm run render --silent > ../render.log 2>&1) && pass "render: remotion/out/final.mp4" || fail "render: $(tail -20 "$RUN/render.log")"
-  "$PY" "$S/verify.py" "$RUN" && pass "verify" || fail "verify (see remotion/out/verify.json)"
+  vdur=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "$RUN/remotion/out/final.mp4")
+  "$PY" -c "import sys; sys.exit(abs($vdur - $DUR) > 0.5/30)" && pass "render video duration $vdur s = $DUR s to the frame (apad mux keeps every frame)" || fail "render video duration $vdur s ≠ $DUR s"
+  "$PY" "$S/verify.py" "$RUN" > verify.log 2>&1 && pass "verify: $(head -1 verify.log)" || fail "verify: $(cat verify.log)"
+  grep -q "whoosh.*not sync-checked (not a transient)" verify.log && pass "verify: swell cue reported as not sync-checked, not passed" || fail "verify: swell cue not reported as unchecked"
+  "$PY" -c "import json,sys; v=json.load(open('$RUN/remotion/out/verify.json')); b=[x for x in v['checks']['beat sync'] if x['pass'] is True and 'found' in x['detail']]; print('   ', len(b), 'transient cues found within 2 ms'); sys.exit(len(b) < 3)" && pass "verify: every hit cue located at sample level" || fail "verify: hit cues not located"
 fi
 
 [ $status -eq 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"

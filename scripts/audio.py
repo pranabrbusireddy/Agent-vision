@@ -58,24 +58,105 @@ beats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP) - PAD
 beats = beats[beats >= 0]
 
 env = librosa.onset.onset_strength(y=y_pad, sr=sr, hop_length=HOP)
-onset_frames = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=HOP, backtrack=True)
-onsets = librosa.frames_to_time(onset_frames, sr=sr, hop_length=HOP) - PAD
-strength = env[onset_frames] / (env.max() or 1)
-keep = onsets >= -0.02
-onsets, strength = np.clip(onsets[keep], 0, None), strength[keep]
+onset_frames = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=HOP, backtrack=False)
+peaks = librosa.frames_to_time(onset_frames, sr=sr, hop_length=HOP)  # in y_pad time
 
-# beat_track marks energy peaks; onsets are backtracked to where the sound
-# starts. Snap each beat to an onset within 60 ms so beats share that reference
-# (otherwise they run ~20 ms late and skew the beat grid align.py tests cuts on).
+# Refine each detected onset at sample level. librosa's backtrack lands on the
+# previous energy minimum, which in dense audio can be the tail of an earlier
+# sound (±30–50 ms). Instead, on a 12 ms TRAILING-max amplitude envelope (it
+# rises on the attack sample and never dips inside a low-pitched sound, unlike a
+# short moving average): the onset is the last crossing of baseline + 30 % of
+# the rise before the sound's level; strength is that absolute amplitude jump,
+# so a loud kick outranks a bright click.
+# Unclear attacks (jump below 10 % of the median jump, or no crossing) keep
+# librosa's time and are flagged refined=false; nothing moves outside the window.
+from scipy.ndimage import maximum_filter1d  # noqa: E402
+
+N_ENV = int(0.012 * sr)
+amp = maximum_filter1d(np.abs(y_pad), size=N_ENV, origin=(N_ENV - 1) // 2)
+cands = []
+for tp in peaks:
+    lo, hi = max(0, int((tp - 0.08) * sr)), min(len(amp), int((tp + 0.03) * sr))
+    if hi - lo < 4:
+        cands.append((tp, 0.0, False))
+        continue
+    seg = amp[lo:hi]
+    p0 = max(0, int((tp - 0.01) * sr) - lo)
+    k = p0 + int(np.argmax(seg[p0:]))           # the sound's level, at/after the detected peak
+    base, level = float(seg[: k + 1].min()), float(seg[k])
+    below = np.where(seg[: k + 1] < base + 0.3 * (level - base))[0]
+    if level - base <= 0 or not len(below):
+        cands.append((tp, max(level - base, 0.0), False))
+    else:
+        cands.append(((lo + int(below[-1]) + 1) / sr, level - base, True))
+jumps = np.array([c[1] for c in cands]) if cands else np.zeros(0)
+floor = 0.1 * float(np.median(jumps[jumps > 0])) if np.any(jumps > 0) else 0.0
+refined, jump, is_ref = [], [], []
+for (t_ref, j, ok), tp in zip(cands, peaks):
+    ok = ok and j >= floor
+    refined.append(t_ref if ok else tp)
+    jump.append(j)
+    is_ref.append(ok)
+onsets = np.array(refined) - PAD
+strength = np.array(jump) / (max(jump) if jump and max(jump) > 0 else 1)
+is_ref = np.array(is_ref, dtype=bool)
+keep = onsets >= -0.02
+onsets, strength, is_ref = np.clip(onsets[keep], 0, None), strength[keep], is_ref[keep]
+# Two detections can refine to the same attack; keep the stronger.
 if len(onsets):
-    near = onsets[np.abs(onsets[None, :] - beats[:, None]).argmin(axis=1)] if len(beats) else beats
-    beats = np.where(np.abs(near - beats) <= 0.06, near, beats)
+    order = np.argsort(onsets)
+    onsets, strength, is_ref = onsets[order], strength[order], is_ref[order]
+    dedup = [0]
+    for j in range(1, len(onsets)):
+        if onsets[j] - onsets[dedup[-1]] < 0.01:
+            if strength[j] > strength[dedup[-1]]:
+                dedup[-1] = j
+        else:
+            dedup.append(j)
+    onsets, strength, is_ref = onsets[dedup], strength[dedup], is_ref[dedup]
+
+# beat_track can mark a kick's energy peak (up to ~70 ms after its attack) or
+# lock onto a bright click/hi-hat near it (spectral flux favours high
+# frequencies). Snap each beat to the STRONGEST attack (amplitude jump) within
+# ±120 ms, so beats share the attack reference whichever side the tracker erred.
+SNAP_BEFORE, SNAP_AFTER = 0.12, 0.12
+if len(onsets) and len(beats):
+    snapped = []
+    for b in beats:
+        win = np.where((onsets >= b - SNAP_BEFORE) & (onsets <= b + SNAP_AFTER))[0]
+        snapped.append(onsets[win[np.argmax(strength[win])]] if len(win) else b)
+    beats = np.array(snapped)
+    # Second pass, grid-consistent: fit period and phase over ALL first-pass beats,
+    # then snap each grid-predicted beat to the strongest attack within ±60 ms.
+    # One accent between beats (or a decoy the tracker locked onto) can then only
+    # move its own beat if it sits on the grid.
+    if len(beats) > 3:
+        period = float(np.median(np.diff(beats)))
+        if period > 0:
+            idx = np.round((beats - beats[0]) / period)
+            slope, icpt = np.polyfit(idx, beats, 1)
+            phase_ang = np.angle(np.mean(np.exp(1j * 2 * np.pi * (beats - icpt) / slope)))
+            icpt += phase_ang / (2 * np.pi) * slope
+            n0 = int(np.ceil((0 - icpt) / slope))
+            grid = icpt + slope * np.arange(n0, int((duration - icpt) / slope) + 1)
+            win = min(0.06, slope / 4)
+            second = []
+            for g in grid:
+                cand = np.where(np.abs(onsets - g) <= win)[0]
+                if len(cand):
+                    second.append(onsets[cand[np.argmax(strength[cand])]])
+            if len(second) >= len(beats) // 2:
+                beats = np.array(second)
 
 # Tempo: a line fitted through the beat times averages out the 23 ms hop
 # quantisation. Beat trackers often lock to half or double time on short clips
 # (risk #5), so report all three; align.py says which one the cuts follow.
 if len(beats) > 2:
-    tempo = 60 / float(np.polyfit(np.arange(len(beats)), beats, 1)[0])
+    # Index each beat by its grid position (gaps where a beat had no clear attack
+    # count as skipped beats, not as a slower tempo).
+    step = float(np.median(np.diff(beats)))
+    idx = np.round((beats - beats[0]) / step) if step > 0 else np.arange(len(beats))
+    tempo = 60 / float(np.polyfit(idx, beats, 1)[0])
 else:
     tempo = float(np.atleast_1d(tempo_est)[0])
 candidates = [round(tempo / 2, 1), round(tempo, 1), round(tempo * 2, 1)]
@@ -110,10 +191,11 @@ OUT.write_text(json.dumps({
     "tempo_bpm": round(tempo, 1),
     "tempo_candidates_bpm": candidates,
     "beats": [round(float(t), 3) for t in beats],
-    "onsets": [{"t": round(float(t), 3), "strength": round(float(s), 2)} for t, s in zip(onsets, strength)],
+    "onsets": [{"t": round(float(t), 3), "strength": round(float(s), 3), "refined": bool(r)} for t, s, r in zip(onsets, strength, is_ref)],
+    "onsets_refined": f"{int(is_ref.sum())}/{len(is_ref)}",
     "loudness_peaks": peaks,
     "silences": silences,
-    "method": "librosa beat_track / onset_detect (backtracked) / RMS; times in seconds from the start of the reference",
+    "method": "librosa beat_track / onset_detect; onsets refined on a 12 ms trailing-max envelope (last 30 % crossing before the level; refined=false keeps librosa's time when the attack is unclear); onset strength = amplitude jump, normalised to the track max; beats snapped to the strongest attack within ±120 ms, then re-snapped on a fitted grid (strongest attack within ±60 ms of each grid beat); RMS peaks/silences; times in seconds from the start of the reference",
 }, indent=2))
 print(f"tempo ≈ {tempo:.1f} bpm (candidates {candidates}), {len(beats)} beats, {len(onsets)} onsets, "
       f"{len(peaks)} peaks, {len(silences)} silences")

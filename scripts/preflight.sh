@@ -24,7 +24,7 @@ if [ -x "$PY" ]; then
   elif "$PY" -c "import faster_whisper" 2>/dev/null; then ok "whisper" "faster-whisper"
   else bad "whisper" "install: $PY -m pip install mlx-whisper (Apple Silicon) or faster-whisper"; fi
 else
-  bad "python venv" "create: python3 -m venv $SKILL/.venv && $SKILL/.venv/bin/pip install librosa soundfile numpy pillow yt-dlp jsonschema mlx-whisper"
+  bad "python venv" "create: python3 -m venv $SKILL/.venv && $SKILL/.venv/bin/pip install -r $SKILL/requirements.txt"
 fi
 if command -v node >/dev/null; then
   major=$(node -p 'process.versions.node.split(".")[0]')

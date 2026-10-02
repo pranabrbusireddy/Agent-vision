@@ -50,10 +50,10 @@ bash scripts/selftest.sh            # known-answer test: download, analysis, fai
 bash scripts/selftest.sh --render   # plus a Remotion build, render and verify (slower)
 ```
 
-## Known issues
+## Notes
 
-- **Audio sync in Remotion renders:** Remotion's AAC encode currently puts audio about 43 ms late. Until the template is fixed, render the video with `--muted`, render the audio with `--codec=wav`, then mux with `ffmpeg -i video.mp4 -i audio.wav -c:v copy -c:a aac out.mp4`.
-- `verify.py`'s beat-sync check uses librosa onsets, which can misreport sync by ±30–40 ms at 60 fps. A sample-accurate check is planned.
+- `npm run render` renders the video silent and the audio as WAV, then muxes them with `ffmpeg`. That avoids an AAC delay of ~43 ms that Remotion's own mux adds. `ffmpeg` is already required, and `preflight.sh` checks for it.
+- Sync is verified at sample level: `verify.py` finds each hit sound in the render by cross-correlating the cue's own audio file (±2 ms).
 
 ## Licences
 

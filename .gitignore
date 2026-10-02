@@ -12,3 +12,4 @@ agent-vision-runs/
 SKILL(Agent-vision).md
 AGENT_CHANNEL.md
 OPEN_ITEMS.md
+.selftest.lock/

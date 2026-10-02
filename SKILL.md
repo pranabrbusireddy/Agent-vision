@@ -47,7 +47,7 @@ All commands run from the user's project folder (where `./assets` lives); runs g
 ### Phase 3 — Audio analysis (local, first-class)
 1. `$PY $AV/scripts/audio.py <run>` → tempo (plus half/double candidates), beats, onsets, loudness peaks, silences. No audio or silent audio is reported as unavailable.
 2. `$PY $AV/scripts/transcribe.py <run>` → speech (mlx-whisper on Apple Silicon, else faster-whisper). Segments over music are marked unverified. The first run downloads the model (about 1.6 GB, once); ask the user first. If they decline, run `transcribe.py <run> --skip "<their reason>"`. The brief then can't quote speech at all, and brief.md says speech wasn't analysed.
-3. `$PY $AV/scripts/align.py <run>` → every event tagged with its shot, `cut_hits` ("hit lands on cut 4 at 3.20 s", or explicitly not on a hit), and which tempo candidate the cuts actually follow.
+3. `$PY $AV/scripts/align.py <run>` → every event tagged with its shot, `cut_hits` ("hit lands on cut 4 at 3.20 s", or explicitly not on a hit, with a `near` onset noted when one falls within min(3 frames, 60 ms)), `hit_offset_ms` (the median and IQR of sound-minus-cut over hit + near cuts, which shows a consistent lead or lag), and which tempo candidate the cuts follow. Onsets are refined at sample level, and beats are snapped to attacks, not energy peaks.
 4. Optional cross-check: only if the user has configured a video-capable model API key. Read that provider's docs for the current model name at runtime. Where it disagrees with the local timings, the local measurement wins and the item becomes unverified. Never required.
 
 ### Phase 4 — Production brief (approval gate)
@@ -62,10 +62,10 @@ Once the brief is approved, build it; don't stop at a storyboard.
 3. `bash $AV/scripts/new_build.sh <run> [assets-dir]` copies the Remotion template to `<run>/remotion/`, copies the assets into `public/assets/` and runs `npm install` there.
 4. Audio: `$PY $AV/scripts/sfx.py <run>/remotion/public/audio --bpm <cuts_follow_bpm or tempo> --duration <s> --offset <first beat>` generates a bed and cues with no licensing attached. Or use a track the user confirms they have a licence for. Never the reference's music.
 5. Write `<run>/remotion/src/storyboard.json` (types in `src/types.ts`). By default it uses the reference's size and fps, with shot times from the brief, transitions, camera moves, text layers with enter animations, and audio cues on the cuts that were on hits. Extend `src/Video.tsx` only when the storyboard format can't express a shot.
-6. `cd <run>/remotion && npx tsc --noEmit && npm run render` → `out/final.mp4`.
+6. `cd <run>/remotion && npx tsc --noEmit && npm run render` → `out/final.mp4`. This renders the video silent, renders the audio to WAV, then muxes with ffmpeg; Remotion's own AAC mux delays audio by ~43 ms.
 
 ### Phase 6 — Personalization loop and verification
-1. `$PY $AV/scripts/verify.py <run>` runs numeric checks: format, duration (±2 frames), cut timing against the reference, text legibility (found, ≥ 2.5 % height, WCAG contrast), audio cues landing on onsets, cuts that were on hits still on hits, and no near-duplicate of a reference frame. It also writes `out/verify/compare.jpg` (reference beside render).
+1. `$PY $AV/scripts/verify.py <run>` runs numeric checks: format, duration (±2 frames), cut timing against the reference, text legibility (found, ≥ 2.5 % height, WCAG contrast), every transient audio cue found in the render within 2 ms (cross-correlating the cue's own file; swells and missing cue files are reported, never passed), cuts that were on hits still on hits, and no near-duplicate of a reference frame. It also writes `out/verify/compare.jpg` (reference beside render).
 2. Look at `compare.jpg` and the frames in `out/verify/frames/`. Fix any failures before showing the user.
 3. Ask the user about small tweaks (logo size, text colour, transition timing, copy), apply them, re-render and re-verify. Log each round in `storyboard.md`. **Up to 3 rounds**, then stop.
 4. Write `<run>/limitations.md`: unverified brief items, verify warnings, and anything left unresolved after 3 rounds.
@@ -121,7 +121,7 @@ Agent Vision itself is planned as open source. Remotion's licence is separate an
 4. **Download/compression quality** varies by source. `media.json` → `quality_notes` lowers confidence.
 5. **Audio beat-tracking** can double or halve tempo. All three candidates are reported, and align.py says which one the cuts follow (scored against chance).
 6. **Derivative output risk.** Mirroring structure is fine, copying distinctive compositions isn't. `too_close_to_reference` in the brief, plus a perceptual-hash check in verify.py.
-7. **Render drift against audio.** Checked numerically in verify.py, not by eye.
+7. **Render drift against audio.** Checked at sample level in verify.py (cross-correlation, ±2 ms), not by eye or by onset detection.
 8. **Scope creep.** Capped at 3 personalization rounds; the rest goes in limitations.md.
 9. **Download reliability/ToS.** Platforms change their structure and terms. download.sh fails clearly instead of retrying silently, and the user is responsible for downloading only what they're allowed to use as reference.
 10. **Account security.** No cookies, tokens or passwords are ever used, so a run can't leak a login. The fallback for login-only videos is a phone screen recording passed in as a local file.

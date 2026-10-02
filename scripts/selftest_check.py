@@ -186,9 +186,35 @@ elif mode == "storyboard":
         sb_shots.append({"id": f"s{s['shot']:02d}", "ref": s["shot"], "start": s["start"], "end": s["end"], "background": bg,
                          "transitionIn": {"type": "cut"}, "camera": {"type": "push-in", "amount": 0.05}, "layers": layers})
     cues = [{"t": h["cut_t"], "src": "audio/hit.wav", "label": f"hit on cut {h['cut']}"} for h in align["cut_hits"] if h["onset_t"] is not None]
+    cues.append({"t": 6.0, "src": "audio/whoosh.wav", "label": "whoosh (swell)"})  # must be reported unchecked, never passed
     sb = {"width": media["size"][0], "height": media["size"][1], "fps": round(media["fps"]), "duration": media["duration"],
           "audio": {"bed": "audio/bed.wav", "bedVolume": 0.5, "cues": cues}, "shots": sb_shots}
     (run / "remotion" / "src" / "storyboard.json").write_text(json.dumps(sb, indent=2))
     print(f"  storyboard: {len(sb_shots)} shots mirroring the reference cuts, {len(cues)} hit cue(s)")
+
+elif mode == "near":
+    # fx2: kicks on the 0.5 s grid (attack → ~70 ms rise to peak) with a weak decoy click
+    # 100 ms before each; a beep 40 ms after the 4.30 s cut; 60 fps.
+    run = Path(sys.argv[2])
+    audio, align = load(run, "audio.json"), load(run, "alignment.json")
+    beats = audio["beats"]
+    grid = [b for b in beats if 0.4 < b < 7.6]
+    errs = [b - round(b * 2) / 2 for b in grid]
+    check(len(grid) >= 10 and max(abs(e) for e in errs) <= 0.015,
+          f"beats snap to kick attacks, not peaks or decoys: {len(grid)} beats, worst {max(abs(e) for e in errs) * 1000:.0f} ms off the 0.5 s grid")
+    hits = {round(h["cut_t"], 2): h for h in align["cut_hits"]}
+    h = hits.get(4.3)
+    check(h is not None and h["onset_t"] is None and "near" in h and 30 <= h["near"]["offset_ms"] <= 50,
+          f"cut 4.30 with a beep 40 ms later → near, not hit ({h and h.get('near')})")
+    on_grid = [hits[c] for c in (1.0, 2.0, 3.5, 5.0, 6.5) if c in hits]
+    check(len(on_grid) == 5 and all(x["onset_t"] is not None for x in on_grid), "cuts on kick attacks → hits")
+    check(align["near_tolerance_ms"] == 50, f"near tolerance at 60 fps = min(3 frames, 60 ms) = 50 ms ({align['near_tolerance_ms']})")
+    t = align["tempo"]
+    check(t["cuts_follow_bpm"] == 120.0 or abs((t["cuts_follow_bpm"] or 0) - 120) < 1.5, f"cuts follow {t['cuts_follow_bpm']} bpm (truth 120)")
+    check(abs(t["cut_beat_offset_ms"]["median"]) <= 15, f"median cut→beat offset {t['cut_beat_offset_ms']} ≈ 0 (cuts sit on attacks)")
+    ho = align.get("hit_offset_ms", {})
+    # 5 on-attack hits (~+2 ms) and one +40 ms near: the median and IQR stay at the hits (one outlier can't move the IQR).
+    check(ho.get("n") == 6 and abs(ho["median"]) <= 10 and ho["iqr"][1] <= 10,
+          f"hit_offset_ms over hit + near cuts: {ho} (5 on-attack hits plus the +40 ms near)")
 
 sys.exit(1 if fails else 0)

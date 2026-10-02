@@ -11,8 +11,10 @@ summary. Exit 1 if any hard check fails:
   structure   each mirrored cut lands within 2 frames of the reference cut
   legibility  every text layer is found in its box, ≥ 2.5% of frame height, and
               meets WCAG contrast (4.5:1, or 3:1 for text ≥ 4% of height)
-  beat sync   every audio cue has an onset within 1.5 frames in the render audio;
-              cuts that were on a hit in the reference are on a hit here too
+  beat sync   every transient audio cue (hit/click/pop) is found in the render
+              audio within 2 ms, by cross-correlating the cue's own file;
+              cuts that were on a hit in the reference have one; swells
+              (risers, whooshes) and missing cue files are reported, never passed
   originality no render shot is a near-duplicate of a reference frame (risk #6)
 """
 import json
@@ -114,40 +116,73 @@ for s in sb["shots"]:
         check("legibility", size >= 2.5, f"{label}: size {size}% of height (≥ 2.5)")
         check("legibility", ratio >= need, f"{label}: contrast {ratio:.1f}:1 vs background #{''.join(f'{int(c):02x}' for c in bg)} (needs {need}:1)")
 
-# --- beat sync
+# --- beat sync: each transient cue located in the render by cross-correlating
+# its own file (sample-accurate, unlike onset detection), so a muxing offset
+# such as unsignalled AAC priming can't hide inside a frame-based tolerance.
+SR = 48000
+SYNC_MS = 2.0
+
+
+def pcm(path):
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.float32).astype(float)
+
+
+def is_transient(x):
+    """Reaches half its peak within 20 ms: a hit, click or pop, not a swell."""
+    a = np.abs(x)
+    return a.size > 0 and a.max() > 0 and np.argmax(a >= 0.5 * a.max()) <= 0.02 * SR
+
+
 has_audio = any(s["codec_type"] == "audio" for s in info["streams"])
 cues = (sb.get("audio") or {}).get("cues", [])
 if cues or (sb.get("audio") or {}).get("bed"):
     check("beat sync", has_audio, "render has an audio stream")
-if has_audio and (cues or alignment.get("cut_hits")):
-    import librosa
-
-    wav = VER / "render.wav"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(RENDER), "-vn", "-ac", "1", "-ar", "22050", str(wav)], check=True)
-    y, sr = librosa.load(wav, sr=22050)
-    pad = np.zeros(int(0.5 * sr), dtype=y.dtype)
-    envl = librosa.onset.onset_strength(y=np.concatenate([pad, y]), sr=sr)
-    onsets = librosa.frames_to_time(librosa.onset.onset_detect(onset_envelope=envl, sr=sr, backtrack=True), sr=sr) - 0.5
-    tol = 1.5 * frame
-    def nearest(t):
-        return float(onsets[np.argmin(np.abs(onsets - t))]) if len(onsets) else None
-
-    def offset(near, t):
-        return "none" if near is None else f"{near:.3f} s ({(near - t) * 1000:+.0f} ms)"
-
+passed_at = []  # times of transient cues found in sync
+if has_audio and cues:
+    y = pcm(RENDER)
+    transients = 0
     for c in cues:
-        near = nearest(c["t"])
         label = c.get("label", c["src"])
-        check("beat sync", near is not None and abs(near - c["t"]) <= tol, f"cue {label} at {c['t']:.3f} s → onset {offset(near, c['t'])}")
+        src = RM / "public" / c["src"]
+        if not src.exists():
+            check("beat sync", False, f"cue {label}: file public/{c['src']} missing")
+            continue
+        x = pcm(src)
+        if not is_transient(x):
+            warns.append(f"beat sync: cue {label} not sync-checked (not a transient)")
+            report.setdefault("beat sync", []).append({"pass": None, "detail": f"cue {label}: not a transient, not checked"})
+            continue
+        transients += 1
+        tmpl = x[: int(0.04 * SR)] - x[: int(0.04 * SR)].mean()
+        lo = max(0, int((c["t"] - 0.06) * SR))
+        seg = y[lo: int((c["t"] + 0.06) * SR) + len(tmpl)]
+        if len(seg) < len(tmpl):
+            check("beat sync", False, f"cue {label} at {c['t']:.3f} s: outside the render audio")
+            continue
+        corr = np.correlate(seg, tmpl, mode="valid")
+        energy = np.sqrt(np.convolve(seg ** 2, np.ones(len(tmpl)), mode="valid") * np.sum(tmpl ** 2)) + 1e-12
+        score = corr / energy
+        k = int(np.argmax(score))
+        off_ms = ((lo + k) / SR - c["t"]) * 1000
+        ok = score[k] >= 0.5 and abs(off_ms) <= SYNC_MS
+        check("beat sync", ok, f"cue {label} at {c['t']:.3f} s → found {off_ms:+.1f} ms (match {score[k]:.2f}; needs ≤{SYNC_MS:g} ms, ≥0.5)")
+        if ok:
+            passed_at.append(c["t"])
+    if transients == 0:
+        warns.append("beat sync: not checked (no transient cue files)")
+    # Cuts that were on a hit in the reference need a synced transient cue at the mirrored shot.
     by_ref = {s.get("ref"): s for s in sb["shots"]}
     for h in alignment.get("cut_hits", []):
         if h["onset_t"] is None or h["cut"] not in by_ref:
             continue
         shot = by_ref[h["cut"]]
-        near = nearest(shot["start"])
-        check("beat sync", near is not None and abs(near - shot["start"]) <= tol,
-              f"reference cut {h['cut']} was on a hit; render shot {shot['id']} at {shot['start']:.3f} s → onset {offset(near, shot['start'])}")
-    wav.unlink(missing_ok=True)
+        ok = any(abs(t - shot["start"]) <= frame + 1e-6 for t in passed_at)
+        check("beat sync", ok, f"reference cut {h['cut']} was on a hit; render shot {shot['id']} at {shot['start']:.3f} s "
+              f"{'has' if ok else 'has no'} synced transient cue within 1 frame")
+elif not cues:
+    warns.append("beat sync: not checked (no audio cues in the storyboard)")
 
 # --- originality (risk #6) and the side-by-side sheet
 
@@ -190,7 +225,8 @@ sheet.save(VER / "compare.jpg", quality=85)
 
 (RM / "out" / "verify.json").write_text(json.dumps({"pass": not fails, "failures": fails, "warnings": warns, "checks": report}, indent=2))
 total = sum(len(v) for v in report.values())
-print(f"{total - len(fails) - len(warns)}/{total} checks pass; {len(fails)} fail, {len(warns)} warn → remotion/out/verify.json, verify/compare.jpg")
+passes = sum(x["pass"] is True for v in report.values() for x in v)
+print(f"{passes}/{total} checks pass; {len(fails)} fail, {len(warns)} warn → remotion/out/verify.json, verify/compare.jpg")
 for f in fails:
     print(f"  FAIL {f}")
 for w in warns:

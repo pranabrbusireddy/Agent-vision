@@ -5,7 +5,7 @@
   "description": "Recreation of a reference video's format with your own assets, driven by src/storyboard.json.",
   "scripts": {
     "studio": "remotion studio src/index.ts",
-    "render": "remotion render src/index.ts Main out/final.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p --audio-codec=aac --audio-bitrate=192k",
+    "render": "remotion render src/index.ts Main out/video.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p --muted && remotion render src/index.ts Main out/audio.wav --codec=wav && ffmpeg -hide_banner -loglevel error -y -i out/video.mp4 -i out/audio.wav -map 0:v:0 -map 1:a:0 -c:v copy -af apad -c:a aac -b:a 192k -shortest -movflags +faststart out/final.mp4",
     "still": "remotion still src/index.ts Main",
     "typecheck": "tsc --noEmit"
   },
